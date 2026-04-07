@@ -1,146 +1,169 @@
 /* ===================================
    منصة تعليمية - المنطق الرئيسي
+   مع Firebase Firestore
    =================================== */
 
 'use strict';
 
+// ===== 🔥 إعدادات Firebase =====
+// !! استبدل القيم دي بالقيم الخاصة بيك من Firebase Console !!
+const firebaseConfig = {
+  apiKey: "REPLACE_WITH_YOUR_API_KEY",
+  authDomain: "REPLACE_WITH_YOUR_AUTH_DOMAIN",
+  projectId: "REPLACE_WITH_YOUR_PROJECT_ID",
+  storageBucket: "REPLACE_WITH_YOUR_STORAGE_BUCKET",
+  messagingSenderId: "REPLACE_WITH_YOUR_MESSAGING_SENDER_ID",
+  appId: "REPLACE_WITH_YOUR_APP_ID"
+};
+
+// تهيئة Firebase
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
 // ===== إدارة البيانات =====
 const DB = {
   KEYS: {
-    COURSES: 'edu_courses',
-    PROGRESS: 'edu_progress',
     ADMIN_SESSION: 'edu_admin_session',
-    VIEWS: 'edu_views',
-    QUIZZES: 'edu_quizzes',
-    QUIZ_RESULTS: 'edu_quiz_results',
-    STUDENTS: 'edu_students',
     STUDENT_SESSION: 'edu_student_session',
   },
 
-  get(key) {
-    try {
-      return JSON.parse(localStorage.getItem(key)) || null;
-    } catch { return null; }
-  },
-
-  set(key, value) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-      return true;
-    } catch { return false; }
-  },
-
-  getCourses() {
-    return this.get(this.KEYS.COURSES) || [];
-  },
-
-  saveCourses(courses) {
-    return this.set(this.KEYS.COURSES, courses);
-  },
-
-  getProgress() {
-    return this.get(this.KEYS.PROGRESS) || {};
-  },
-
-  saveProgress(progress) {
-    return this.set(this.KEYS.PROGRESS, progress);
-  },
-
+  // ===== الجلسات (تفضل localStorage لأنها بيانات المتصفح) =====
   isAdminLoggedIn() {
-    return this.get(this.KEYS.ADMIN_SESSION) === true;
+    try { return JSON.parse(localStorage.getItem(this.KEYS.ADMIN_SESSION)) === true; }
+    catch { return false; }
   },
-
   adminLogin(username, password) {
     if (username === 'admin' && password === 'admin') {
-      this.set(this.KEYS.ADMIN_SESSION, true);
+      localStorage.setItem(this.KEYS.ADMIN_SESSION, JSON.stringify(true));
       return true;
     }
     return false;
   },
+  adminLogout() { localStorage.removeItem(this.KEYS.ADMIN_SESSION); },
 
-  adminLogout() {
-    localStorage.removeItem(this.KEYS.ADMIN_SESSION);
+  // ===== الكورسات (Firestore) =====
+  async getCourses() {
+    const snap = await db.collection('courses').orderBy('createdAt', 'desc').get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  async saveCourse(course) {
+    const { id, ...data } = course;
+    if (id) {
+      await db.collection('courses').doc(id).set(data, { merge: true });
+    } else {
+      const ref = await db.collection('courses').add({ ...data, createdAt: new Date().toISOString() });
+      return ref.id;
+    }
+    return id;
+  },
+  async deleteCourse(courseId) {
+    await db.collection('courses').doc(courseId).delete();
+  },
+  async getCourse(courseId) {
+    const doc = await db.collection('courses').doc(courseId).get();
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
+  },
+
+  // ===== التقدم =====
+  async getProgress(studentId) {
+    const key = studentId ? `progress_${studentId}` : 'progress_guest';
+    try { return JSON.parse(localStorage.getItem(key)) || {}; }
+    catch { return {}; }
+  },
+  async saveProgress(progress, studentId) {
+    const key = studentId ? `progress_${studentId}` : 'progress_guest';
+    localStorage.setItem(key, JSON.stringify(progress));
   },
 
   // ===== المشاهدات =====
-  getViews() {
-    return this.get(this.KEYS.VIEWS) || {};
-  },
-  recordView(courseId, lessonId) {
-    const views = this.getViews();
+  async recordView(courseId, lessonId) {
     const key = `${courseId}_${lessonId}`;
-    views[key] = (views[key] || 0) + 1;
-    this.set(this.KEYS.VIEWS, views);
+    const ref = db.collection('views').doc(key);
+    await ref.set({ courseId, lessonId, count: firebase.firestore.FieldValue.increment(1) }, { merge: true });
   },
-  getLessonViews(courseId, lessonId) {
-    return (this.getViews()[`${courseId}_${lessonId}`]) || 0;
+  async getAllViews() {
+    const snap = await db.collection('views').get();
+    const views = {};
+    snap.docs.forEach(d => { views[d.id] = d.data().count || 0; });
+    return views;
   },
-  getCourseViews(courseId) {
-    const views = this.getViews();
-    return Object.keys(views).filter(k => k.startsWith(courseId + '_')).reduce((s, k) => s + views[k], 0);
-  },
-  getTotalViews() {
-    return Object.values(this.getViews()).reduce((s, v) => s + v, 0);
+  async getTotalViews() {
+    const snap = await db.collection('views').get();
+    return snap.docs.reduce((s, d) => s + (d.data().count || 0), 0);
   },
 
   // ===== الامتحانات =====
-  getQuizzes() { return this.get(this.KEYS.QUIZZES) || []; },
-  saveQuizzes(q) { return this.set(this.KEYS.QUIZZES, q); },
-  getQuizResults() { return this.get(this.KEYS.QUIZ_RESULTS) || []; },
-  saveQuizResult(result) {
-    const results = this.getQuizResults();
-    results.push({ ...result, date: new Date().toISOString() });
-    return this.set(this.KEYS.QUIZ_RESULTS, results);
+  async getQuizzes() {
+    const snap = await db.collection('quizzes').get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   },
-  getQuizByCourse(courseId) {
-    return this.getQuizzes().find(q => q.courseId === courseId) || null;
+  async saveQuiz(quiz) {
+    const { id, ...data } = quiz;
+    if (id) {
+      await db.collection('quizzes').doc(id).set(data, { merge: true });
+    } else {
+      const ref = await db.collection('quizzes').add(data);
+      return ref.id;
+    }
+    return id;
   },
-  getQuizByLesson(lessonId) {
-    return this.getQuizzes().find(q => q.lessonId === lessonId) || null;
+  async deleteQuiz(quizId) {
+    await db.collection('quizzes').doc(quizId).delete();
+  },
+  async getQuizByLesson(lessonId) {
+    const snap = await db.collection('quizzes').where('lessonId', '==', lessonId).limit(1).get();
+    if (snap.empty) return null;
+    return { id: snap.docs[0].id, ...snap.docs[0].data() };
+  },
+  async getQuizByCourse(courseId) {
+    const snap = await db.collection('quizzes').where('courseId', '==', courseId).limit(1).get();
+    if (snap.empty) return null;
+    return { id: snap.docs[0].id, ...snap.docs[0].data() };
+  },
+  async saveQuizResult(result) {
+    await db.collection('quiz_results').add({ ...result, date: new Date().toISOString() });
+  },
+  async getQuizResults() {
+    const snap = await db.collection('quiz_results').get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   },
 
   // ===== الطلاب =====
-  getStudents() { return this.get(this.KEYS.STUDENTS) || []; },
-  saveStudents(s) { return this.set(this.KEYS.STUDENTS, s); },
-
-  registerStudent({ name, phone, password }) {
-    const students = this.getStudents();
-    if (students.find(s => s.phone === phone)) return { ok: false, msg: 'رقم الهاتف مسجل مسبقاً' };
-    const student = { id: 'stu_' + Date.now(), name, phone, password, joinedAt: new Date().toISOString() };
-    students.push(student);
-    this.saveStudents(students);
+  async getStudents() {
+    const snap = await db.collection('students').get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+  async registerStudent({ name, phone, password }) {
+    const snap = await db.collection('students').where('phone', '==', phone).limit(1).get();
+    if (!snap.empty) return { ok: false, msg: 'رقم الهاتف مسجل مسبقاً' };
+    const ref = await db.collection('students').add({ name, phone, password, joinedAt: new Date().toISOString() });
+    return { ok: true, student: { id: ref.id, name, phone } };
+  },
+  async studentLogin(phone, password) {
+    const snap = await db.collection('students')
+      .where('phone', '==', phone)
+      .where('password', '==', password)
+      .limit(1).get();
+    if (snap.empty) return { ok: false, msg: 'رقم الهاتف أو كلمة المرور غير صحيحة' };
+    const student = { id: snap.docs[0].id, ...snap.docs[0].data() };
+    localStorage.setItem(this.KEYS.STUDENT_SESSION, student.id);
     return { ok: true, student };
   },
-
-  studentLogin(phone, password) {
-    const student = this.getStudents().find(s => s.phone === phone && s.password === password);
-    if (!student) return { ok: false, msg: 'رقم الهاتف أو كلمة المرور غير صحيحة' };
-    this.set(this.KEYS.STUDENT_SESSION, student.id);
-    return { ok: true, student };
-  },
-
-  getStudentSession() {
-    const id = this.get(this.KEYS.STUDENT_SESSION);
+  async getStudentSession() {
+    const id = localStorage.getItem(this.KEYS.STUDENT_SESSION);
     if (!id) return null;
-    return this.getStudents().find(s => s.id === id) || null;
+    const doc = await db.collection('students').doc(id).get();
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
   },
-
   studentLogout() { localStorage.removeItem(this.KEYS.STUDENT_SESSION); },
-
-  isStudentLoggedIn() { return !!this.getStudentSession(); },
-
-  getStudentProgress(studentId) {
-    const all = this.getProgress();
-    const result = {};
-    Object.keys(all).filter(k => k.startsWith(studentId + '|')).forEach(k => { result[k] = all[k]; });
-    return result;
-  }
+  isStudentLoggedIn() { return !!localStorage.getItem(this.KEYS.STUDENT_SESSION); },
 };
 
 // ===== الإشعارات =====
 const Notify = {
   container: null,
-
   init() {
     this.container = document.getElementById('notifications');
     if (!this.container) {
@@ -150,22 +173,18 @@ const Notify = {
       document.body.appendChild(this.container);
     }
   },
-
   show(message, type = 'info', duration = 3500) {
     if (!this.container) this.init();
-
     const icons = { success: '✅', error: '❌', info: 'ℹ️', warning: '⚠️' };
     const el = document.createElement('div');
     el.className = `notification ${type}`;
     el.innerHTML = `<span class="notification-icon">${icons[type]}</span><span>${message}</span>`;
     this.container.appendChild(el);
-
     setTimeout(() => {
       el.style.animation = 'slideInLeft 0.3s ease reverse';
       setTimeout(() => el.remove(), 300);
     }, duration);
   },
-
   success(msg) { this.show(msg, 'success'); },
   error(msg)   { this.show(msg, 'error'); },
   info(msg)    { this.show(msg, 'info'); },
@@ -174,46 +193,29 @@ const Notify = {
 
 // ===== مساعدات عامة =====
 const Utils = {
-  generateId() {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2);
-  },
-
-  getUrlParam(name) {
-    return new URLSearchParams(window.location.search).get(name);
-  },
-
+  generateId() { return Date.now().toString(36) + Math.random().toString(36).substr(2); },
+  getUrlParam(name) { return new URLSearchParams(window.location.search).get(name); },
   setUrlParam(name, value) {
     const url = new URL(window.location);
     url.searchParams.set(name, value);
     window.history.replaceState({}, '', url);
   },
-
-  // استخراج معرف فيديو يوتيوب
   extractYouTubeId(url) {
     if (!url) return null;
     const patterns = [
       /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
       /^([a-zA-Z0-9_-]{11})$/
     ];
-    for (const p of patterns) {
-      const m = url.match(p);
-      if (m) return m[1];
-    }
+    for (const p of patterns) { const m = url.match(p); if (m) return m[1]; }
     return url.length === 11 ? url : null;
   },
-
-  // حساب نسبة التقدم
-  getCourseProgress(courseId) {
-    const courses = DB.getCourses();
-    const course = courses.find(c => c.id === courseId);
+  async getCourseProgress(courseId, studentId) {
+    const course = await DB.getCourse(courseId);
     if (!course || !course.lessons || course.lessons.length === 0) return 0;
-
-    const progress = DB.getProgress();
+    const progress = await DB.getProgress(studentId);
     const completed = course.lessons.filter(l => progress[`${courseId}_${l.id}`]).length;
     return Math.round((completed / course.lessons.length) * 100);
   },
-
-  // قراءة ملف كـ base64
   readFileAsBase64(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -222,8 +224,6 @@ const Utils = {
       reader.readAsDataURL(file);
     });
   },
-
-  // تنسيق التاريخ
   formatDate(dateStr) {
     if (!dateStr) return '';
     return new Date(dateStr).toLocaleDateString('ar-EG');
@@ -231,24 +231,20 @@ const Utils = {
 };
 
 // ===== شريط التنقل =====
-function initNavbar() {
+async function initNavbar() {
   const toggler = document.querySelector('.navbar-toggler');
   const nav = document.querySelector('.navbar-nav');
-  if (toggler && nav) {
-    toggler.addEventListener('click', () => nav.classList.toggle('open'));
-  }
+  if (toggler && nav) toggler.addEventListener('click', () => nav.classList.toggle('open'));
 
-  // تحديد الرابط النشط
   const currentPage = window.location.pathname.split('/').pop() || 'index.html';
   document.querySelectorAll('.nav-link').forEach(link => {
     const href = link.getAttribute('href');
     if (href && href.includes(currentPage)) link.classList.add('active');
   });
 
-  // عرض اسم الطالب لو مسجل دخول
-  const student = DB.getStudentSession();
   const studentArea = document.getElementById('studentNavArea');
   if (studentArea) {
+    const student = await DB.getStudentSession();
     if (student) {
       studentArea.innerHTML = `
         <span style="color:var(--gold);font-size:.9rem;font-weight:700">👋 ${student.name}</span>
@@ -263,73 +259,20 @@ function initNavbar() {
 }
 
 // ===== الصفحة الرئيسية =====
-function initHomePage() {
-  seedDemoData();
-  renderCourses();
+async function initHomePage() {
+  await renderCourses();
   initSearch();
   initFilters();
-  updateHomeStats();
+  await updateHomeStats();
 }
 
-// بيانات تجريبية
-function seedDemoData() {
-  const existing = DB.getCourses();
-  if (existing.length > 0) return;
-
-  const demo = [
-    {
-      id: Utils.generateId(),
-      title: 'أساسيات تطوير الويب',
-      description: 'تعلم HTML وCSS وJavaScript من الصفر حتى الاحتراف مع مشاريع عملية',
-      category: 'برمجة',
-      thumbnail: '',
-      emoji: '💻',
-      createdAt: new Date().toISOString(),
-      lessons: [
-        { id: Utils.generateId(), title: 'مقدمة إلى HTML', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-        { id: Utils.generateId(), title: 'أساسيات CSS', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-        { id: Utils.generateId(), title: 'JavaScript للمبتدئين', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-      ]
-    },
-    {
-      id: Utils.generateId(),
-      title: 'تصميم الجرافيك',
-      description: 'احترف تصميم الجرافيك باستخدام أدوب فوتوشوب وإليستريتور خطوة بخطوة',
-      category: 'تصميم',
-      thumbnail: '',
-      emoji: '🎨',
-      createdAt: new Date().toISOString(),
-      lessons: [
-        { id: Utils.generateId(), title: 'مقدمة في التصميم', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-        { id: Utils.generateId(), title: 'نظرية الألوان', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-      ]
-    },
-    {
-      id: Utils.generateId(),
-      title: 'التسويق الرقمي',
-      description: 'استراتيجيات التسويق عبر الإنترنت وسوشيال ميديا لتنمية أعمالك',
-      category: 'تسويق',
-      thumbnail: '',
-      emoji: '📱',
-      createdAt: new Date().toISOString(),
-      lessons: [
-        { id: Utils.generateId(), title: 'أساسيات التسويق الرقمي', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-        { id: Utils.generateId(), title: 'إدارة السوشيال ميديا', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-        { id: Utils.generateId(), title: 'إعلانات جوجل', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-        { id: Utils.generateId(), title: 'تحليل البيانات', videoUrl: 'dQw4w9WgXcQ', pdfUrl: '', pdfName: '' },
-      ]
-    }
-  ];
-
-  DB.saveCourses(demo);
-}
-
-// رسم الكورسات
-function renderCourses(courses = null, searchQuery = '', activeCategory = 'all') {
+async function renderCourses(searchQuery = '', activeCategory = 'all') {
   const grid = document.getElementById('coursesGrid');
   if (!grid) return;
 
-  const allCourses = courses || DB.getCourses();
+  grid.innerHTML = `<div class="loading-spinner" style="grid-column:1/-1"><div class="spinner"></div></div>`;
+
+  let allCourses = await DB.getCourses();
   let filtered = allCourses;
 
   if (searchQuery) {
@@ -340,7 +283,6 @@ function renderCourses(courses = null, searchQuery = '', activeCategory = 'all')
       c.category.toLowerCase().includes(q)
     );
   }
-
   if (activeCategory && activeCategory !== 'all') {
     filtered = filtered.filter(c => c.category === activeCategory);
   }
@@ -355,13 +297,13 @@ function renderCourses(courses = null, searchQuery = '', activeCategory = 'all')
     return;
   }
 
-  grid.innerHTML = filtered.map((course, i) => {
-    const progress = Utils.getCourseProgress(course.id);
+  const studentId = localStorage.getItem(DB.KEYS.STUDENT_SESSION);
+  const cardsHtml = await Promise.all(filtered.map(async (course, i) => {
+    const progress = await Utils.getCourseProgress(course.id, studentId);
     const lessonsCount = course.lessons ? course.lessons.length : 0;
     const thumbnail = course.thumbnail
       ? `<img src="${course.thumbnail}" alt="${course.title}" onerror="this.parentElement.innerHTML='<div class=\\'course-thumbnail-placeholder\\'>${course.emoji || '📚'}</div>'">`
       : `<div class="course-thumbnail-placeholder">${course.emoji || '📚'}</div>`;
-
     return `
     <div class="course-card" style="animation-delay:${i * 0.1}s" onclick="window.location.href='course.html?id=${course.id}'">
       <div class="course-thumbnail">
@@ -373,37 +315,30 @@ function renderCourses(courses = null, searchQuery = '', activeCategory = 'all')
         <div class="course-title">${course.title}</div>
         <div class="course-description">${course.description}</div>
         <div class="progress-wrapper">
-          <div class="progress-label">
-            <span>التقدم</span>
-            <span>${progress}%</span>
-          </div>
-          <div class="progress-bar">
-            <div class="progress-fill" style="width:${progress}%"></div>
-          </div>
+          <div class="progress-label"><span>التقدم</span><span>${progress}%</span></div>
+          <div class="progress-bar"><div class="progress-fill" style="width:${progress}%"></div></div>
         </div>
         <a href="course.html?id=${course.id}" class="btn-course">ابدأ التعلم ←</a>
       </div>
     </div>`;
-  }).join('');
+  }));
+  grid.innerHTML = cardsHtml.join('');
 }
 
-// البحث
 function initSearch() {
   const input = document.getElementById('searchInput');
   if (!input) return;
-
   let timeout;
   input.addEventListener('input', () => {
     clearTimeout(timeout);
     timeout = setTimeout(() => {
       const activeBtn = document.querySelector('.filter-btn.active');
       const cat = activeBtn ? activeBtn.dataset.category : 'all';
-      renderCourses(null, input.value.trim(), cat);
+      renderCourses(input.value.trim(), cat);
     }, 300);
   });
 }
 
-// الفلترة
 function initFilters() {
   const btns = document.querySelectorAll('.filter-btn');
   btns.forEach(btn => {
@@ -412,14 +347,13 @@ function initFilters() {
       btn.classList.add('active');
       const searchInput = document.getElementById('searchInput');
       const q = searchInput ? searchInput.value.trim() : '';
-      renderCourses(null, q, btn.dataset.category);
+      renderCourses(q, btn.dataset.category);
     });
   });
 }
 
-// تحديث إحصائيات الصفحة الرئيسية
-function updateHomeStats() {
-  const courses = DB.getCourses();
+async function updateHomeStats() {
+  const courses = await DB.getCourses();
   const totalLessons = courses.reduce((sum, c) => sum + (c.lessons ? c.lessons.length : 0), 0);
   const categories = [...new Set(courses.map(c => c.category))];
 
@@ -428,7 +362,6 @@ function updateHomeStats() {
   if (el('statLessons')) el('statLessons').textContent = totalLessons;
   if (el('statCategories')) el('statCategories').textContent = categories.length;
 
-  // تحديث أزرار الفلترة
   const filterContainer = document.getElementById('filterButtons');
   if (filterContainer) {
     const cats = ['all', ...categories];
@@ -441,19 +374,15 @@ function updateHomeStats() {
 }
 
 // ===== صفحة الكورس =====
-function initCoursePage() {
+async function initCoursePage() {
   const courseId = Utils.getUrlParam('id');
   if (!courseId) { window.location.href = 'index.html'; return; }
-
-  const courses = DB.getCourses();
-  const course = courses.find(c => c.id === courseId);
+  const course = await DB.getCourse(courseId);
   if (!course) { window.location.href = 'index.html'; return; }
-
-  renderCourseDetails(course);
+  await renderCourseDetails(course);
 }
 
-function renderCourseDetails(course) {
-  // العنوان والوصف
+async function renderCourseDetails(course) {
   const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
   setEl('courseTitle', course.title);
   setEl('courseDesc', course.description);
@@ -461,7 +390,6 @@ function renderCourseDetails(course) {
   setEl('courseLessonsCount', `${course.lessons ? course.lessons.length : 0} درس`);
   setEl('courseCreatedAt', Utils.formatDate(course.createdAt));
 
-  // الصورة
   const thumbEl = document.getElementById('courseThumbnailHero');
   if (thumbEl) {
     if (course.thumbnail) {
@@ -471,47 +399,38 @@ function renderCourseDetails(course) {
     }
   }
 
-  // التقدم
-  const progress = Utils.getCourseProgress(course.id);
+  const studentId = localStorage.getItem(DB.KEYS.STUDENT_SESSION);
+  const progress = await Utils.getCourseProgress(course.id, studentId);
   updateProgressCircle(progress);
-
-  // الدروس
-  renderLessonsList(course);
-
-  // عنوان الصفحة
+  await renderLessonsList(course);
   document.title = course.title + ' | منصة تعليمية';
 }
 
 function updateProgressCircle(percent) {
   const el = document.getElementById('progressPercent');
   if (el) el.textContent = percent + '%';
-
   const circle = document.getElementById('progressCircle');
   if (circle) {
     const circumference = 2 * Math.PI * 50;
-    const offset = circumference - (percent / 100) * circumference;
     circle.style.strokeDasharray = circumference;
-    circle.style.strokeDashoffset = offset;
+    circle.style.strokeDashoffset = circumference - (percent / 100) * circumference;
   }
 }
 
-function renderLessonsList(course) {
+async function renderLessonsList(course) {
   const list = document.getElementById('lessonsList');
   if (!list) return;
-
-  const progress = DB.getProgress();
+  const studentId = localStorage.getItem(DB.KEYS.STUDENT_SESSION);
+  const progress = await DB.getProgress(studentId);
   const lessons = course.lessons || [];
-
   if (lessons.length === 0) {
     list.innerHTML = `<div class="empty-state"><div class="icon">📭</div><h3>لا توجد دروس بعد</h3></div>`;
     return;
   }
-
   list.innerHTML = lessons.map((lesson, i) => {
     const isCompleted = !!progress[`${course.id}_${lesson.id}`];
     const hasVideo = !!lesson.videoUrl;
     const hasPdf = !!lesson.pdfUrl;
-
     return `
     <a class="lesson-item ${isCompleted ? 'completed' : ''}"
        href="lesson.html?courseId=${course.id}&lessonId=${lesson.id}">
@@ -529,38 +448,32 @@ function renderLessonsList(course) {
 }
 
 // ===== صفحة الدرس =====
-function initLessonPage() {
+async function initLessonPage() {
   const courseId = Utils.getUrlParam('courseId');
   const lessonId = Utils.getUrlParam('lessonId');
   if (!courseId || !lessonId) { window.location.href = 'index.html'; return; }
 
-  const courses = DB.getCourses();
-  const course = courses.find(c => c.id === courseId);
+  const course = await DB.getCourse(courseId);
   if (!course) { window.location.href = 'index.html'; return; }
 
   const lesson = (course.lessons || []).find(l => l.id === lessonId);
   if (!lesson) { window.location.href = `course.html?id=${courseId}`; return; }
 
-  renderLesson(course, lesson);
-  renderSideLessons(course, lessonId);
-
-  // تسجيل مشاهدة
+  await renderLesson(course, lesson);
+  await renderSideLessons(course, lessonId);
   DB.recordView(courseId, lessonId);
 }
 
-function renderLesson(course, lesson) {
-  // الـ breadcrumb
+async function renderLesson(course, lesson) {
   const bc = document.getElementById('breadcrumb');
   if (bc) bc.innerHTML = `
     <a href="index.html">الرئيسية</a> ←
     <a href="course.html?id=${course.id}">${course.title}</a> ←
     <span>${lesson.title}</span>`;
 
-  // عنوان الدرس
   const titleEl = document.getElementById('lessonTitle');
   if (titleEl) titleEl.textContent = lesson.title;
 
-  // الفيديو
   const videoContainer = document.getElementById('videoContainer');
   if (videoContainer) {
     const ytId = Utils.extractYouTubeId(lesson.videoUrl);
@@ -570,24 +483,20 @@ function renderLesson(course, lesson) {
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowfullscreen></iframe>`;
     } else {
-      videoContainer.innerHTML = `
-        <div class="no-video">
-          <div class="icon">🎬</div>
-          <p>لا يوجد فيديو لهذا الدرس</p>
-        </div>`;
+      videoContainer.innerHTML = `<div class="no-video"><div class="icon">🎬</div><p>لا يوجد فيديو لهذا الدرس</p></div>`;
     }
   }
 
-  // زر الإتمام
-  const progress = DB.getProgress();
+  const studentId = localStorage.getItem(DB.KEYS.STUDENT_SESSION);
+  const progress = await DB.getProgress(studentId);
   const progressKey = `${course.id}_${lesson.id}`;
   const isCompleted = !!progress[progressKey];
 
   const completeBtn = document.getElementById('completeBtn');
   if (completeBtn) {
     updateCompleteBtn(completeBtn, isCompleted);
-    completeBtn.addEventListener('click', () => {
-      const prog = DB.getProgress();
+    completeBtn.addEventListener('click', async () => {
+      const prog = await DB.getProgress(studentId);
       const key = `${course.id}_${lesson.id}`;
       if (prog[key]) {
         delete prog[key];
@@ -598,23 +507,18 @@ function renderLesson(course, lesson) {
         updateCompleteBtn(completeBtn, true);
         Notify.success('أحسنت! تم تسجيل إتمام الدرس 🎉');
       }
-      DB.saveProgress(prog);
+      await DB.saveProgress(prog, studentId);
     });
   }
 
-  // الـ PDF
   const pdfSection = document.getElementById('pdfSection');
   if (pdfSection) {
     if (lesson.pdfUrl) {
       pdfSection.style.display = 'block';
       const pdfViewer = document.getElementById('pdfViewer');
       if (pdfViewer) pdfViewer.src = lesson.pdfUrl;
-
       const pdfDownload = document.getElementById('pdfDownload');
-      if (pdfDownload) {
-        pdfDownload.href = lesson.pdfUrl;
-        pdfDownload.download = lesson.pdfName || 'ملف.pdf';
-      }
+      if (pdfDownload) { pdfDownload.href = lesson.pdfUrl; pdfDownload.download = lesson.pdfName || 'ملف.pdf'; }
     } else {
       pdfSection.style.display = 'none';
     }
@@ -622,10 +526,9 @@ function renderLesson(course, lesson) {
 
   document.title = lesson.title + ' | المتفوقين';
 
-  // عرض الامتحان إن وجد
   const quizSection = document.getElementById('quizSection');
   if (quizSection) {
-    const quiz = DB.getQuizByLesson(lesson.id);
+    const quiz = await DB.getQuizByLesson(lesson.id);
     if (quiz && quiz.questions && quiz.questions.length > 0) {
       quizSection.style.display = 'block';
       renderQuizForStudent(quiz, course.id, lesson.id);
@@ -645,74 +548,50 @@ function updateCompleteBtn(btn, isCompleted) {
   }
 }
 
-function renderSideLessons(course, currentLessonId) {
+async function renderSideLessons(course, currentLessonId) {
   const list = document.getElementById('sideLessonsList');
   if (!list) return;
-
-  const progress = DB.getProgress();
+  const studentId = localStorage.getItem(DB.KEYS.STUDENT_SESSION);
+  const progress = await DB.getProgress(studentId);
   const lessons = course.lessons || [];
 
   list.innerHTML = lessons.map((lesson, i) => {
     const isCompleted = !!progress[`${course.id}_${lesson.id}`];
     const isCurrent = lesson.id === currentLessonId;
-
     return `
     <a class="lesson-item ${isCompleted ? 'completed' : ''} ${isCurrent ? 'active' : ''}"
        href="lesson.html?courseId=${course.id}&lessonId=${lesson.id}"
        style="${isCurrent ? 'border-color:var(--accent);background:rgba(233,69,96,0.1)' : ''}">
       <div class="lesson-num">${isCompleted ? '✓' : i + 1}</div>
-      <div class="lesson-info">
-        <div class="lesson-title-text">${lesson.title}</div>
-      </div>
+      <div class="lesson-info"><div class="lesson-title-text">${lesson.title}</div></div>
     </a>`;
   }).join('');
 
-  // زر الدرس التالي والسابق
   const currentIndex = lessons.findIndex(l => l.id === currentLessonId);
   const prevLesson = lessons[currentIndex - 1];
   const nextLesson = lessons[currentIndex + 1];
 
   const prevBtn = document.getElementById('prevLesson');
   const nextBtn = document.getElementById('nextLesson');
-
   if (prevBtn) {
-    if (prevLesson) {
-      prevBtn.href = `lesson.html?courseId=${course.id}&lessonId=${prevLesson.id}`;
-      prevBtn.style.opacity = '1';
-      prevBtn.style.pointerEvents = 'auto';
-    } else {
-      prevBtn.style.opacity = '0.4';
-      prevBtn.style.pointerEvents = 'none';
-    }
+    if (prevLesson) { prevBtn.href = `lesson.html?courseId=${course.id}&lessonId=${prevLesson.id}`; prevBtn.style.opacity = '1'; prevBtn.style.pointerEvents = 'auto'; }
+    else { prevBtn.style.opacity = '0.4'; prevBtn.style.pointerEvents = 'none'; }
   }
-
   if (nextBtn) {
-    if (nextLesson) {
-      nextBtn.href = `lesson.html?courseId=${course.id}&lessonId=${nextLesson.id}`;
-      nextBtn.style.opacity = '1';
-      nextBtn.style.pointerEvents = 'auto';
-    } else {
-      nextBtn.style.opacity = '0.4';
-      nextBtn.style.pointerEvents = 'none';
-    }
+    if (nextLesson) { nextBtn.href = `lesson.html?courseId=${course.id}&lessonId=${nextLesson.id}`; nextBtn.style.opacity = '1'; nextBtn.style.pointerEvents = 'auto'; }
+    else { nextBtn.style.opacity = '0.4'; nextBtn.style.pointerEvents = 'none'; }
   }
 }
 
 // ===== صفحة تسجيل الدخول =====
 function initLoginPage() {
-  if (DB.isAdminLoggedIn()) {
-    window.location.href = 'dashboard.html';
-    return;
-  }
-
+  if (DB.isAdminLoggedIn()) { window.location.href = 'dashboard.html'; return; }
   const form = document.getElementById('loginForm');
   if (!form) return;
-
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
-
     if (DB.adminLogin(username, password)) {
       Notify.success('مرحباً بك يا مدير! جاري التحويل...');
       setTimeout(() => window.location.href = 'dashboard.html', 1000);
@@ -726,7 +605,6 @@ function initLoginPage() {
 function renderQuizForStudent(quiz, courseId, lessonId) {
   const container = document.getElementById('quizContainer');
   if (!container) return;
-
   let currentQ = 0;
   let answers = {};
 
@@ -759,13 +637,12 @@ function renderQuizForStudent(quiz, courseId, lessonId) {
   window.selectAnswer = (i) => { answers[currentQ] = i; renderQuestion(); };
   window.quizNext = () => { if (answers[currentQ] === undefined) { Notify.warning('يرجى اختيار إجابة أولاً'); return; } currentQ++; renderQuestion(); };
   window.quizPrev = () => { currentQ--; renderQuestion(); };
-  window.submitQuiz = () => {
+  window.submitQuiz = async () => {
     if (answers[currentQ] === undefined) { Notify.warning('يرجى اختيار إجابة أولاً'); return; }
     let correct = 0;
     quiz.questions.forEach((q, i) => { if (answers[i] === q.correct) correct++; });
     const score = Math.round((correct / quiz.questions.length) * 100);
-    DB.saveQuizResult({ quizId: quiz.id, courseId, lessonId, score, correct, total: quiz.questions.length });
-
+    await DB.saveQuizResult({ quizId: quiz.id, courseId, lessonId, score, correct, total: quiz.questions.length });
     container.innerHTML = `
       <div class="quiz-result">
         <div class="result-circle ${score >= 60 ? 'pass' : 'fail'}">
@@ -777,19 +654,17 @@ function renderQuizForStudent(quiz, courseId, lessonId) {
       </div>`;
   };
   window.retakeQuiz = () => { currentQ = 0; answers = {}; renderQuestion(); };
-
   renderQuestion();
 }
-function initDashboard() {
-  if (!DB.isAdminLoggedIn()) {
-    window.location.href = 'login.html';
-    return;
-  }
 
-  updateDashboardStats();
-  renderCoursesTable();
-  renderViewsTable();
-  renderQuizzesTable();
+// ===== لوحة التحكم =====
+async function initDashboard() {
+  if (!DB.isAdminLoggedIn()) { window.location.href = 'login.html'; return; }
+
+  await updateDashboardStats();
+  await renderCoursesTable();
+  await renderViewsTable();
+  await renderQuizzesTable();
   initSidebarNav();
 
   const addCourseBtn = document.getElementById('addCourseBtn');
@@ -812,7 +687,6 @@ function initSidebarNav() {
       e.preventDefault();
       links.forEach(l => l.classList.remove('active'));
       link.classList.add('active');
-
       const target = link.dataset.section;
       document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
       const section = document.getElementById(target);
@@ -821,34 +695,31 @@ function initSidebarNav() {
   });
 }
 
-// ===== لوحة التحكم =====
-function updateDashboardStats() {
-  const courses = DB.getCourses();
+async function updateDashboardStats() {
+  const courses = await DB.getCourses();
   const totalLessons = courses.reduce((sum, c) => sum + (c.lessons ? c.lessons.length : 0), 0);
   const categories = [...new Set(courses.map(c => c.category))];
-  const totalViews = DB.getTotalViews();
-  const totalQuizzes = DB.getQuizzes().length;
+  const totalViews = await DB.getTotalViews();
+  const quizzes = await DB.getQuizzes();
+  const students = await DB.getStudents();
 
   const s = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   s('dashCoursesCount', courses.length);
   s('dashLessonsCount', totalLessons);
   s('dashCategoriesCount', categories.length);
   s('dashViewsCount', totalViews);
-  s('dashQuizzesCount', totalQuizzes);
-  s('dashStudentsCount', DB.getStudents().length);
+  s('dashQuizzesCount', quizzes.length);
+  s('dashStudentsCount', students.length);
 }
 
-function renderCoursesTable() {
+async function renderCoursesTable() {
   const tbody = document.getElementById('coursesTableBody');
   if (!tbody) return;
-
-  const courses = DB.getCourses();
-
+  const courses = await DB.getCourses();
   if (courses.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">لا توجد كورسات بعد</td></tr>`;
     return;
   }
-
   tbody.innerHTML = courses.map(course => {
     const lessonsCount = course.lessons ? course.lessons.length : 0;
     return `
@@ -881,23 +752,19 @@ function showAddCourseModal() {
   const modalTitle = document.getElementById('courseModalTitle');
   const form = document.getElementById('courseForm');
   if (!modal || !form) return;
-
   modalTitle.textContent = 'إضافة كورس جديد';
   form.reset();
   document.getElementById('courseId').value = '';
   modal.style.display = 'flex';
 }
 
-function showEditCourseModal(courseId) {
+async function showEditCourseModal(courseId) {
   const modal = document.getElementById('courseModal');
   const modalTitle = document.getElementById('courseModalTitle');
   const form = document.getElementById('courseForm');
   if (!modal || !form) return;
-
-  const courses = DB.getCourses();
-  const course = courses.find(c => c.id === courseId);
+  const course = await DB.getCourse(courseId);
   if (!course) return;
-
   modalTitle.textContent = 'تعديل الكورس';
   document.getElementById('courseId').value = course.id;
   document.getElementById('courseTitleInput').value = course.title;
@@ -907,7 +774,7 @@ function showEditCourseModal(courseId) {
   modal.style.display = 'flex';
 }
 
-function saveCourse(e) {
+async function saveCourse(e) {
   e.preventDefault();
   const id = document.getElementById('courseId').value;
   const title = document.getElementById('courseTitleInput').value.trim();
@@ -915,49 +782,37 @@ function saveCourse(e) {
   const category = document.getElementById('courseCategoryInput').value.trim();
   const emoji = document.getElementById('courseEmojiInput').value.trim() || '📚';
 
-  if (!title || !description || !category) {
-    Notify.error('يرجى ملء جميع الحقول المطلوبة');
-    return;
-  }
+  if (!title || !description || !category) { Notify.error('يرجى ملء جميع الحقول المطلوبة'); return; }
 
-  const courses = DB.getCourses();
-
-  // معالجة الصورة
   const thumbnailInput = document.getElementById('courseThumbnailInput');
-  const handleSave = (thumbnail) => {
+
+  const handleSave = async (thumbnail) => {
     if (id) {
-      const idx = courses.findIndex(c => c.id === id);
-      if (idx !== -1) {
-        courses[idx] = { ...courses[idx], title, description, category, emoji, ...(thumbnail !== undefined ? { thumbnail } : {}) };
-        Notify.success('تم تعديل الكورس بنجاح');
-      }
+      const existing = await DB.getCourse(id);
+      await DB.saveCourse({ id, ...existing, title, description, category, emoji, ...(thumbnail !== undefined ? { thumbnail } : {}) });
+      Notify.success('تم تعديل الكورس بنجاح');
     } else {
-      courses.push({ id: Utils.generateId(), title, description, category, emoji, thumbnail: thumbnail || '', lessons: [], createdAt: new Date().toISOString() });
+      await DB.saveCourse({ title, description, category, emoji, thumbnail: thumbnail || '', lessons: [] });
       Notify.success('تم إضافة الكورس بنجاح 🎉');
     }
-
-    DB.saveCourses(courses);
     closeCourseModal();
-    updateDashboardStats();
-    renderCoursesTable();
+    await updateDashboardStats();
+    await renderCoursesTable();
   };
 
   if (thumbnailInput && thumbnailInput.files[0]) {
-    Utils.readFileAsBase64(thumbnailInput.files[0])
-      .then(handleSave)
-      .catch(() => { Notify.error('فشل رفع الصورة'); });
+    Utils.readFileAsBase64(thumbnailInput.files[0]).then(handleSave).catch(() => Notify.error('فشل رفع الصورة'));
   } else {
     handleSave();
   }
 }
 
-function deleteCourse(courseId) {
-  if (!confirm('هل أنت متأكد من حذف هذا الكورس؟ سيتم حذف جميع دروسه أيضاً.')) return;
-  const courses = DB.getCourses().filter(c => c.id !== courseId);
-  DB.saveCourses(courses);
+async function deleteCourse(courseId) {
+  if (!confirm('هل أنت متأكد من حذف هذا الكورس؟')) return;
+  await DB.deleteCourse(courseId);
   Notify.success('تم حذف الكورس');
-  updateDashboardStats();
-  renderCoursesTable();
+  await updateDashboardStats();
+  await renderCoursesTable();
 }
 
 function closeCourseModal() {
@@ -966,15 +821,12 @@ function closeCourseModal() {
 }
 
 // ===== إدارة الدروس =====
-function openManageLessons(courseId) {
+async function openManageLessons(courseId) {
   const modal = document.getElementById('lessonsModal');
   if (!modal) return;
-
   modal.dataset.courseId = courseId;
-  const courses = DB.getCourses();
-  const course = courses.find(c => c.id === courseId);
+  const course = await DB.getCourse(courseId);
   if (!course) return;
-
   document.getElementById('manageLessonsCourseTitle').textContent = course.title;
   renderManageLessonsList(course);
   modal.style.display = 'flex';
@@ -983,14 +835,11 @@ function openManageLessons(courseId) {
 function renderManageLessonsList(course) {
   const list = document.getElementById('manageLessonsList');
   if (!list) return;
-
   const lessons = course.lessons || [];
-
   if (lessons.length === 0) {
     list.innerHTML = `<div class="empty-state"><div class="icon">📭</div><h3>لا توجد دروس</h3><p>أضف درسك الأول!</p></div>`;
     return;
   }
-
   list.innerHTML = lessons.map((lesson, i) => `
     <div class="lesson-manage-item">
       <span class="lesson-num" style="width:28px;height:28px;font-size:0.8rem">${i + 1}</span>
@@ -1004,14 +853,12 @@ function renderManageLessonsList(course) {
     </div>`).join('');
 }
 
-function showAddLessonForm() {
+async function showAddLessonForm() {
   const modal = document.getElementById('lessonsModal');
   const courseId = modal.dataset.courseId;
   closeLessonsModal();
-
   const lessonModal = document.getElementById('lessonEditModal');
   if (!lessonModal) return;
-
   document.getElementById('lessonModalTitle').textContent = 'إضافة درس جديد';
   document.getElementById('lessonEditId').value = '';
   document.getElementById('lessonEditCourseId').value = courseId;
@@ -1020,16 +867,13 @@ function showAddLessonForm() {
   lessonModal.style.display = 'flex';
 }
 
-function editLesson(courseId, lessonId) {
-  const courses = DB.getCourses();
-  const course = courses.find(c => c.id === courseId);
+async function editLesson(courseId, lessonId) {
+  const course = await DB.getCourse(courseId);
   const lesson = course && course.lessons ? course.lessons.find(l => l.id === lessonId) : null;
   if (!lesson) return;
-
   closeLessonsModal();
   const lessonModal = document.getElementById('lessonEditModal');
   if (!lessonModal) return;
-
   document.getElementById('lessonModalTitle').textContent = 'تعديل الدرس';
   document.getElementById('lessonEditId').value = lesson.id;
   document.getElementById('lessonEditCourseId').value = courseId;
@@ -1038,75 +882,57 @@ function editLesson(courseId, lessonId) {
   lessonModal.style.display = 'flex';
 }
 
-function saveLesson(e) {
+async function saveLesson(e) {
   e.preventDefault();
   const lessonId = document.getElementById('lessonEditId').value;
   const courseId = document.getElementById('lessonEditCourseId').value;
   const title = document.getElementById('lessonTitleInput').value.trim();
   const videoUrl = document.getElementById('lessonVideoInput').value.trim();
-
   if (!title) { Notify.error('عنوان الدرس مطلوب'); return; }
 
   const pdfInput = document.getElementById('lessonPdfInput');
 
-  const handleSave = (pdfData, pdfName) => {
-    const courses = DB.getCourses();
-    const courseIdx = courses.findIndex(c => c.id === courseId);
-    if (courseIdx === -1) return;
-
-    if (!courses[courseIdx].lessons) courses[courseIdx].lessons = [];
+  const handleSave = async (pdfData, pdfName) => {
+    const course = await DB.getCourse(courseId);
+    if (!course) return;
+    if (!course.lessons) course.lessons = [];
 
     if (lessonId) {
-      const lIdx = courses[courseIdx].lessons.findIndex(l => l.id === lessonId);
+      const lIdx = course.lessons.findIndex(l => l.id === lessonId);
       if (lIdx !== -1) {
-        courses[courseIdx].lessons[lIdx] = {
-          ...courses[courseIdx].lessons[lIdx],
-          title, videoUrl,
-          ...(pdfData ? { pdfUrl: pdfData, pdfName } : {})
-        };
+        course.lessons[lIdx] = { ...course.lessons[lIdx], title, videoUrl, ...(pdfData ? { pdfUrl: pdfData, pdfName } : {}) };
         Notify.success('تم تعديل الدرس');
       }
     } else {
-      courses[courseIdx].lessons.push({
-        id: Utils.generateId(), title, videoUrl,
-        pdfUrl: pdfData || '', pdfName: pdfName || ''
-      });
+      course.lessons.push({ id: Utils.generateId(), title, videoUrl, pdfUrl: pdfData || '', pdfName: pdfName || '' });
       Notify.success('تم إضافة الدرس 🎉');
     }
 
-    DB.saveCourses(courses);
+    await DB.saveCourse(course);
     closeLessonModal();
-    updateDashboardStats();
-    renderCoursesTable();
+    await updateDashboardStats();
+    await renderCoursesTable();
   };
 
   if (pdfInput && pdfInput.files[0]) {
     const file = pdfInput.files[0];
-    if (file.size > 5 * 1024 * 1024) {
-      Notify.error('حجم الملف كبير جداً (الحد الأقصى 5 ميجا)');
-      return;
-    }
-    Utils.readFileAsBase64(file)
-      .then(data => handleSave(data, file.name))
-      .catch(() => Notify.error('فشل رفع الملف'));
+    if (file.size > 5 * 1024 * 1024) { Notify.error('حجم الملف كبير جداً (الحد الأقصى 5 ميجا)'); return; }
+    Utils.readFileAsBase64(file).then(data => handleSave(data, file.name)).catch(() => Notify.error('فشل رفع الملف'));
   } else {
     handleSave(null, null);
   }
 }
 
-function deleteLesson(courseId, lessonId) {
+async function deleteLesson(courseId, lessonId) {
   if (!confirm('هل أنت متأكد من حذف هذا الدرس؟')) return;
-  const courses = DB.getCourses();
-  const courseIdx = courses.findIndex(c => c.id === courseId);
-  if (courseIdx === -1) return;
-
-  courses[courseIdx].lessons = (courses[courseIdx].lessons || []).filter(l => l.id !== lessonId);
-  DB.saveCourses(courses);
+  const course = await DB.getCourse(courseId);
+  if (!course) return;
+  course.lessons = (course.lessons || []).filter(l => l.id !== lessonId);
+  await DB.saveCourse(course);
   Notify.success('تم حذف الدرس');
-
-  renderManageLessonsList(courses[courseIdx]);
-  updateDashboardStats();
-  renderCoursesTable();
+  renderManageLessonsList(course);
+  await updateDashboardStats();
+  await renderCoursesTable();
 }
 
 function closeLessonsModal() {
@@ -1119,7 +945,6 @@ function closeLessonModal() {
   if (modal) modal.style.display = 'none';
 }
 
-// إغلاق النماذج بالنقر خارجها
 document.addEventListener('click', (e) => {
   if (e.target.classList.contains('modal-overlay')) {
     document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none');
@@ -1127,12 +952,11 @@ document.addEventListener('click', (e) => {
 });
 
 // ===== إدارة المشاهدات =====
-function renderViewsTable() {
+async function renderViewsTable() {
   const tbody = document.getElementById('viewsTableBody');
   if (!tbody) return;
-
-  const courses = DB.getCourses();
-  const views = DB.getViews();
+  const courses = await DB.getCourses();
+  const views = await DB.getAllViews();
 
   if (courses.length === 0) {
     tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:2rem">لا توجد بيانات بعد</td></tr>`;
@@ -1143,12 +967,9 @@ function renderViewsTable() {
   courses.forEach(course => {
     (course.lessons || []).forEach(lesson => {
       const v = views[`${course.id}_${lesson.id}`] || 0;
-      if (v > 0) {
-        rows.push({ courseTitle: course.title, lessonTitle: lesson.title, views: v, emoji: course.emoji || '📚' });
-      }
+      if (v > 0) rows.push({ courseTitle: course.title, lessonTitle: lesson.title, views: v, emoji: course.emoji || '📚' });
     });
   });
-
   rows.sort((a, b) => b.views - a.views);
 
   if (rows.length === 0) {
@@ -1173,14 +994,13 @@ function renderViewsTable() {
 }
 
 // ===== إدارة الامتحانات =====
-let editQuizCourseId = '', editQuizLessonId = '', editQuizId = '';
+let editQuizId = '';
 
-function renderQuizzesTable() {
+async function renderQuizzesTable() {
   const tbody = document.getElementById('quizzesTableBody');
   if (!tbody) return;
-
-  const quizzes = DB.getQuizzes();
-  const courses = DB.getCourses();
+  const quizzes = await DB.getQuizzes();
+  const courses = await DB.getCourses();
 
   if (quizzes.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem">لا توجد امتحانات بعد</td></tr>`;
@@ -1190,8 +1010,6 @@ function renderQuizzesTable() {
   tbody.innerHTML = quizzes.map(quiz => {
     const course = courses.find(c => c.id === quiz.courseId);
     const lesson = course ? (course.lessons || []).find(l => l.id === quiz.lessonId) : null;
-    const results = DB.getQuizResults().filter(r => r.quizId === quiz.id);
-    const avgScore = results.length ? Math.round(results.reduce((s, r) => s + r.score, 0) / results.length) : '-';
     return `
     <tr>
       <td><strong>${quiz.title}</strong></td>
@@ -1201,14 +1019,14 @@ function renderQuizzesTable() {
       <td>
         <div class="table-actions">
           <button class="btn-secondary" style="font-size:.8rem" onclick="openEditQuizModal('${quiz.id}')">✏️ تعديل</button>
-          <button class="btn-danger" onclick="deleteQuiz('${quiz.id}')">🗑️</button>
+          <button class="btn-danger" onclick="deleteQuizItem('${quiz.id}')">🗑️</button>
         </div>
       </td>
     </tr>`;
   }).join('');
 }
 
-function openAddQuizModal() {
+async function openAddQuizModal() {
   editQuizId = '';
   const modal = document.getElementById('quizModal');
   if (!modal) return;
@@ -1217,35 +1035,36 @@ function openAddQuizModal() {
   document.getElementById('quizCourseSelect').value = '';
   document.getElementById('quizLessonSelect').innerHTML = '<option value="">اختر الكورس أولاً</option>';
   document.getElementById('quizQuestionsContainer').innerHTML = '';
-  populateCourseSelect('quizCourseSelect');
+  await populateCourseSelect('quizCourseSelect');
   modal.style.display = 'flex';
 }
 
-function openEditQuizModal(quizId) {
+async function openEditQuizModal(quizId) {
   editQuizId = quizId;
-  const quiz = DB.getQuizzes().find(q => q.id === quizId);
+  const quizzes = await DB.getQuizzes();
+  const quiz = quizzes.find(q => q.id === quizId);
   if (!quiz) return;
   const modal = document.getElementById('quizModal');
   document.getElementById('quizModalTitle').textContent = 'تعديل الامتحان';
   document.getElementById('quizTitleInput').value = quiz.title;
-  populateCourseSelect('quizCourseSelect', quiz.courseId);
-  updateLessonSelect(quiz.courseId, quiz.lessonId);
+  await populateCourseSelect('quizCourseSelect', quiz.courseId);
+  await updateLessonSelect(quiz.courseId, quiz.lessonId);
   renderQuestionForms(quiz.questions || []);
   modal.style.display = 'flex';
 }
 
-function populateCourseSelect(selectId, selectedId = '') {
+async function populateCourseSelect(selectId, selectedId = '') {
   const sel = document.getElementById(selectId);
   if (!sel) return;
-  const courses = DB.getCourses();
+  const courses = await DB.getCourses();
   sel.innerHTML = `<option value="">اختر الكورس</option>` +
     courses.map(c => `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.title}</option>`).join('');
 }
 
-function updateLessonSelect(courseId, selectedLessonId = '') {
+async function updateLessonSelect(courseId, selectedLessonId = '') {
   const sel = document.getElementById('quizLessonSelect');
   if (!sel) return;
-  const course = DB.getCourses().find(c => c.id === courseId);
+  const course = await DB.getCourse(courseId);
   const lessons = course ? (course.lessons || []) : [];
   sel.innerHTML = `<option value="">على مستوى الكورس كله</option>` +
     lessons.map(l => `<option value="${l.id}" ${l.id === selectedLessonId ? 'selected' : ''}>${l.title}</option>`).join('');
@@ -1307,11 +1126,10 @@ function renumberQuestions() {
   });
 }
 
-function saveQuiz() {
+async function saveQuiz() {
   const title = document.getElementById('quizTitleInput').value.trim();
   const courseId = document.getElementById('quizCourseSelect').value;
   const lessonId = document.getElementById('quizLessonSelect').value;
-
   if (!title || !courseId) { Notify.error('عنوان الامتحان والكورس مطلوبان'); return; }
 
   const questions = [];
@@ -1321,31 +1139,27 @@ function saveQuiz() {
     const correct = parseInt(form.querySelector('.q-correct').value);
     if (text && opts.every(o => o)) questions.push({ text, options: opts, correct });
   });
-
   if (questions.length === 0) { Notify.error('أضف سؤالاً واحداً على الأقل'); return; }
 
-  const quizzes = DB.getQuizzes();
   if (editQuizId) {
-    const idx = quizzes.findIndex(q => q.id === editQuizId);
-    if (idx !== -1) { quizzes[idx] = { ...quizzes[idx], title, courseId, lessonId, questions }; }
+    await DB.saveQuiz({ id: editQuizId, title, courseId, lessonId, questions });
     Notify.success('تم تعديل الامتحان');
   } else {
-    quizzes.push({ id: Utils.generateId(), title, courseId, lessonId, questions });
+    await DB.saveQuiz({ title, courseId, lessonId, questions });
     Notify.success('تم إضافة الامتحان 🎉');
   }
 
-  DB.saveQuizzes(quizzes);
   document.getElementById('quizModal').style.display = 'none';
-  updateDashboardStats();
-  renderQuizzesTable();
+  await updateDashboardStats();
+  await renderQuizzesTable();
 }
 
-function deleteQuiz(quizId) {
+async function deleteQuizItem(quizId) {
   if (!confirm('حذف هذا الامتحان؟')) return;
-  DB.saveQuizzes(DB.getQuizzes().filter(q => q.id !== quizId));
+  await DB.deleteQuiz(quizId);
   Notify.success('تم الحذف');
-  updateDashboardStats();
-  renderQuizzesTable();
+  await updateDashboardStats();
+  await renderQuizzesTable();
 }
 
 function closeQuizModal() {
@@ -1354,33 +1168,31 @@ function closeQuizModal() {
 }
 
 // ===== التهيئة العامة =====
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   Notify.init();
-  initNavbar();
+  await initNavbar();
 
   const page = window.location.pathname.split('/').pop() || 'index.html';
 
-  if (page === 'index.html' || page === '') initHomePage();
-  else if (page === 'course.html') initCoursePage();
-  else if (page === 'lesson.html') initLessonPage();
+  if (page === 'index.html' || page === '') await initHomePage();
+  else if (page === 'course.html') await initCoursePage();
+  else if (page === 'lesson.html') await initLessonPage();
   else if (page === 'login.html') initLoginPage();
-  else if (page === 'dashboard.html') initDashboard();
+  else if (page === 'dashboard.html') await initDashboard();
   else if (page === 'student-login.html') initStudentLoginPage();
   else if (page === 'student-register.html') initStudentRegisterPage();
 });
 
 // ===== صفحة دخول الطلاب =====
 function initStudentLoginPage() {
-  // لو مسجل دخول ابعته للرئيسية
   if (DB.isStudentLoggedIn()) { window.location.href = 'index.html'; return; }
-
   const form = document.getElementById('studentLoginForm');
   if (!form) return;
-  form.addEventListener('submit', e => {
+  form.addEventListener('submit', async e => {
     e.preventDefault();
     const phone    = document.getElementById('st-phone').value.trim();
     const password = document.getElementById('st-password').value;
-    const result   = DB.studentLogin(phone, password);
+    const result   = await DB.studentLogin(phone, password);
     if (result.ok) {
       Notify.success(`أهلاً ${result.student.name}! 🎉`);
       setTimeout(() => window.location.href = 'index.html', 800);
@@ -1393,10 +1205,9 @@ function initStudentLoginPage() {
 // ===== صفحة تسجيل الطلاب =====
 function initStudentRegisterPage() {
   if (DB.isStudentLoggedIn()) { window.location.href = 'index.html'; return; }
-
   const form = document.getElementById('studentRegisterForm');
   if (!form) return;
-  form.addEventListener('submit', e => {
+  form.addEventListener('submit', async e => {
     e.preventDefault();
     const name     = document.getElementById('st-name').value.trim();
     const phone    = document.getElementById('st-phone').value.trim();
@@ -1408,9 +1219,9 @@ function initStudentRegisterPage() {
     if (password.length < 6)              { Notify.error('كلمة المرور لازم تكون 6 أحرف على الأقل'); return; }
     if (password !== confirm)             { Notify.error('كلمة المرور غير متطابقة'); return; }
 
-    const result = DB.registerStudent({ name, phone, password });
+    const result = await DB.registerStudent({ name, phone, password });
     if (result.ok) {
-      DB.set(DB.KEYS.STUDENT_SESSION, result.student.id);
+      localStorage.setItem(DB.KEYS.STUDENT_SESSION, result.student.id);
       Notify.success('تم التسجيل بنجاح! أهلاً ' + name + ' 🎉');
       setTimeout(() => window.location.href = 'index.html', 800);
     } else {
